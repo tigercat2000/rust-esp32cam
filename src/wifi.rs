@@ -1,35 +1,55 @@
-//! Straight from https://github.com/esp-rs/std-training/blob/main/common/lib/wifi/src/lib.rs
-
-use anyhow::{bail, Result};
+use anyhow::Result;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::peripheral,
     nvs::EspDefaultNvsPartition,
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
-use log::info;
+use log::{info, warn};
 
-pub fn wifi(
+pub fn init_wifi<'a>(
     ssid: &str,
     pass: &str,
-    modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
+    modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'a,
     sysloop: EspSystemEventLoop,
-) -> Result<Box<EspWifi<'static>>> {
-    let mut auth_method = AuthMethod::WPA2Personal;
-    if ssid.is_empty() {
-        bail!("Missing WiFi name")
-    }
-    if pass.is_empty() {
-        auth_method = AuthMethod::None;
-        info!("Wifi password is empty");
-    }
+) -> Result<Box<EspWifi<'a>>> {
     let mut esp_wifi = EspWifi::new(
         modem,
         sysloop.clone(),
         Some(EspDefaultNvsPartition::take()?),
     )?;
 
-    let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sysloop)?;
+    let mut counter = 0;
+
+    loop {
+        if connect(ssid, pass, sysloop.clone(), &mut esp_wifi).is_ok() {
+            break;
+        }
+        counter += 1;
+        warn!("Failed to connect to wifi, {} try", counter);
+    }
+
+    Ok(Box::new(esp_wifi))
+}
+
+pub fn connect(
+    ssid: &str,
+    pass: &str,
+    sysloop: EspSystemEventLoop,
+    esp_wifi: &mut EspWifi<'_>,
+) -> Result<()> {
+    if ssid.is_empty() {
+        panic!("Missing WiFi name")
+    }
+
+    let auth_method = if pass.is_empty() {
+        info!("Wifi password is empty");
+        AuthMethod::None
+    } else {
+        AuthMethod::WPA2Personal
+    };
+
+    let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
 
     wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
 
@@ -39,7 +59,9 @@ pub fn wifi(
 
     info!("Scanning...");
 
-    let ap_infos = wifi.scan()?;
+    let ap_infos = wifi.scan()?.into_iter();
+
+    info!("Scan found: {:#?}", ap_infos);
 
     let ours = ap_infos.into_iter().find(|a| a.ssid == ssid);
 
@@ -77,5 +99,5 @@ pub fn wifi(
 
     info!("Wifi DHCP info: {:?}", ip_info);
 
-    Ok(Box::new(esp_wifi))
+    Ok(())
 }

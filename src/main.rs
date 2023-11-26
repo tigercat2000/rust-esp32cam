@@ -2,9 +2,15 @@ pub mod camera;
 pub mod wifi;
 
 use anyhow::{bail, Result};
+use edge_executor::LocalExecutor;
+use embedded_hal_async::delay::DelayUs;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::peripherals::Peripherals,
+    hal::{
+        peripheral::Peripheral,
+        peripherals::Peripherals,
+        timer::{Timer, TimerDriver},
+    },
     http::server::{Configuration, EspHttpServer},
     io::Write,
     wifi::EspWifi,
@@ -12,7 +18,7 @@ use esp_idf_svc::{
 use log::{info, warn};
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crate::camera::{Camera, CameraConfig, FrameSize};
@@ -65,6 +71,12 @@ fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
+    let executor: LocalExecutor = Default::default();
+
+    edge_executor::block_on(executor.run(async_main()))
+}
+
+async fn async_main() -> Result<()> {
     let mut peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
 
@@ -92,21 +104,28 @@ fn main() -> Result<()> {
         &mut peripherals.ledc.channel0,
     )?;
 
-    let cam = Arc::new(Mutex::new(camera));
+    let camera_mutex = Arc::new(Mutex::new(camera));
 
     let wifi = init_wifi(
         CONFIG.wifi_ssid,
         CONFIG.wifi_psk,
-        peripherals.modem,
+        &mut peripherals.modem,
         sysloop.clone(),
-    )?;
+    )
+    .await?;
 
-    let _server = init_http(cam)?;
+    init_http(camera_mutex)?;
 
-    main_loop(wifi, sysloop)
+    main_loop(peripherals.timer00, wifi, sysloop).await
 }
 
-fn main_loop(mut wifi: Box<EspWifi<'_>>, sysloop: EspSystemEventLoop) -> Result<()> {
+async fn main_loop(
+    timer: impl Peripheral<P = impl Timer>,
+    mut wifi: Box<EspWifi<'_>>,
+    sysloop: EspSystemEventLoop,
+) -> Result<()> {
+    let mut delay_driver = TimerDriver::new(timer, &Default::default())?;
+
     'main: loop {
         match wifi.is_up() {
             Ok(false) | Err(_) => {
@@ -119,6 +138,7 @@ fn main_loop(mut wifi: Box<EspWifi<'_>>, sysloop: EspSystemEventLoop) -> Result<
                         sysloop.clone(),
                         &mut wifi,
                     )
+                    .await
                     .is_ok()
                     {
                         info!("WiFi reconnected successfully.");
@@ -135,7 +155,8 @@ fn main_loop(mut wifi: Box<EspWifi<'_>>, sysloop: EspSystemEventLoop) -> Result<
             }
             _ => {}
         }
-        std::thread::sleep(Duration::from_secs(1));
+
+        delay_driver.delay_ms(1000).await
     }
 
     bail!("Something went horribly wrong!!!")

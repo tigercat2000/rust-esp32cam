@@ -9,6 +9,7 @@ use esp_idf_svc::{
     hal::{
         peripheral::Peripheral,
         peripherals::Peripherals,
+        reset::{ResetReason, WakeupReason},
         timer::{Timer, TimerDriver},
     },
     http::server::{Configuration, EspHttpServer},
@@ -71,9 +72,19 @@ fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    let executor: LocalExecutor = Default::default();
+    self_test()?;
 
+    let executor: LocalExecutor = Default::default();
     edge_executor::block_on(executor.run(async_main()))
+}
+
+fn self_test() -> Result<()> {
+    let reset_reason = ResetReason::get();
+    info!("Last reset was due to {:#?}", reset_reason);
+    let wakeup_reason = WakeupReason::get();
+    info!("Last wakeup was due to {:#?}", wakeup_reason);
+
+    Ok(())
 }
 
 async fn async_main() -> Result<()> {

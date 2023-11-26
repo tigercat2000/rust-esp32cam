@@ -14,3 +14,6 @@ CONFIG_ESP32_SPIRAM_SUPPORT=y
 
 # Increase event stack size
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# TWDT should kill the system
+CONFIG_ESP_TASK_WDT_PANIC=y

@@ -1,0 +1,6 @@
+[submodule "esp-camera-rs"]
+	path = esp-camera-rs
+	url = https://github.com/tigercat2000/esp-camera-rs
+[submodule "crossbeam"]
+	path = crossbeam
+	url = https://github.com/crossbeam-rs/crossbeam

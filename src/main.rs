@@ -1,4 +1,3 @@
-pub mod camera;
 pub mod wifi;
 
 use anyhow::{bail, Result};
@@ -22,8 +21,9 @@ use std::{
     time::Instant,
 };
 
-use crate::camera::{Camera, CameraConfig, FrameSize};
+// use crate::camera::{Camera, CameraConfig, FrameSize};
 use crate::wifi::init_wifi;
+use esp_camera_rs::Camera;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -38,29 +38,41 @@ fn init_http(cam: Arc<Mutex<Camera>>) -> Result<EspHttpServer> {
 
     server.fn_handler("/", esp_idf_svc::http::Method::Get, move |request| {
         let mut time = Instant::now();
-        let result = cam.lock().unwrap().capture_jpeg();
-        info!("Took {}ms to capture_jpeg", time.elapsed().as_millis());
 
-        match result {
-            Ok(jpeg) => {
-                time = Instant::now();
-                let mut response = request.into_response(
-                    200,
-                    None,
-                    &[
-                        ("Content-Type", "image/jpeg"),
-                        ("Content-Length", &jpeg.len().to_string()),
-                    ],
-                )?;
-
-                response.write_all(&jpeg)?;
-                info!("Took {}ms to send image", time.elapsed().as_millis());
+        let lock = cam.lock().unwrap(); // If a thread gets poisoned we're just fucked anyways
+        let fb = match lock.get_framebuffer() {
+            Some(fb) => fb,
+            None => {
+                let mut response = request.into_status_response(500)?;
+                let _ = writeln!(response, "Error: Unable to get framebuffer");
+                return Ok(());
             }
+        };
+
+        let jpeg = match fb.data_as_jpeg(80) {
+            Ok(jpeg) => jpeg,
             Err(e) => {
                 let mut response = request.into_status_response(500)?;
-                writeln!(response, "Error: {:#?}", e)?;
+                let _ = writeln!(response, "Error: {:#?}", e);
+                return Ok(());
             }
-        }
+        };
+
+        info!("Took {}ms to capture_jpeg", time.elapsed().as_millis());
+
+        // Send the image
+        time = Instant::now();
+        let mut response = request.into_response(
+            200,
+            None,
+            &[
+                ("Content-Type", "image/jpeg"),
+                ("Content-Length", &jpeg.len().to_string()),
+            ],
+        )?;
+
+        let _ = response.write_all(jpeg);
+        info!("Took {}ms to send image", time.elapsed().as_millis());
 
         Ok(())
     })?;
@@ -91,28 +103,26 @@ async fn async_main() -> Result<()> {
     let mut peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
 
-    let mut cam_config = CameraConfig::new_jpeg_ov2640();
-    cam_config.frame_size = FrameSize::UXGA;
+    let gpio26 = (&mut peripherals.pins.gpio26).into_ref().map_into();
+    let gpio27 = (&mut peripherals.pins.gpio27).into_ref().map_into();
 
-    let camera = Camera::new(
-        cam_config,
+    let camera = esp_camera_rs::Camera::new(
         &mut peripherals.pins.gpio32,
+        None, // Fake pin
         &mut peripherals.pins.gpio0,
-        &mut peripherals.pins.gpio26,
-        &mut peripherals.pins.gpio27,
-        &mut peripherals.pins.gpio35,
-        &mut peripherals.pins.gpio34,
-        &mut peripherals.pins.gpio39,
-        &mut peripherals.pins.gpio36,
-        &mut peripherals.pins.gpio21,
-        &mut peripherals.pins.gpio19,
-        &mut peripherals.pins.gpio18,
         &mut peripherals.pins.gpio5,
+        &mut peripherals.pins.gpio18,
+        &mut peripherals.pins.gpio19,
+        &mut peripherals.pins.gpio21,
+        &mut peripherals.pins.gpio36,
+        &mut peripherals.pins.gpio39,
+        &mut peripherals.pins.gpio34,
+        &mut peripherals.pins.gpio35,
         &mut peripherals.pins.gpio25,
         &mut peripherals.pins.gpio23,
         &mut peripherals.pins.gpio22,
-        &mut peripherals.ledc.timer0,
-        &mut peripherals.ledc.channel0,
+        Some(gpio26),
+        Some(gpio27),
     )?;
 
     let camera_mutex = Arc::new(Mutex::new(camera));
